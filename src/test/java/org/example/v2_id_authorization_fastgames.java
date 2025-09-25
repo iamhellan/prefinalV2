@@ -28,16 +28,18 @@ public class v2_id_authorization_fastgames {
 
     // ===== УТИЛИТЫ ============================================================
 
-    private Frame findFrameWithSelector(Page p, String selector, int timeoutMs) {
+    private com.microsoft.playwright.Frame findFrameWithSelector(Page p, String selector, int timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
-            for (Frame f : p.frames()) {
-                try {
-                    if (f.locator(selector).count() > 0) {
-                        System.out.println("[DEBUG] Нашли селектор в фрейме: " + f.url());
-                        return f;
-                    }
-                } catch (Throwable ignore) {}
+            for (Page pg : p.context().pages()) {
+                for (com.microsoft.playwright.Frame f : pg.frames()) {
+                    try {
+                        if (f.locator(selector).count() > 0) {
+                            System.out.println("[DEBUG] Нашли селектор в фрейме: " + f.url());
+                            return f;
+                        }
+                    } catch (Throwable ignore) {}
+                }
             }
             p.waitForTimeout(300);
         }
@@ -48,7 +50,7 @@ public class v2_id_authorization_fastgames {
         Locator direct = p.locator(selector);
         if (direct.count() > 0) return direct;
 
-        Frame f = findFrameWithSelector(p, selector, timeoutMs);
+        com.microsoft.playwright.Frame f = findFrameWithSelector(p, selector, timeoutMs);
         if (f != null) return f.locator(selector);
 
         throw new RuntimeException("Элемент не найден ни на странице, ни в её фреймах: " + selector);
@@ -225,7 +227,7 @@ public class v2_id_authorization_fastgames {
                 if (anyBet.count() > 0 && anyBet.first().isVisible()) {
                     boolean enabled = (Boolean) anyBet.first().evaluate("e => !(e.classList && e.classList.contains('pointer-events-none'))");
                     if (enabled) {
-                        System.out.println("[DEBUG] Новый раунд: «Сделать ставку» активны — продолжаем");
+                        System.out.println("[DEBUG] Новый раунд: «Сделать ставку» активны — можно переключаться");
                         return;
                     }
                 }
@@ -236,12 +238,12 @@ public class v2_id_authorization_fastgames {
     }
 
     private Page openGameByHrefContains(Page originPage, String hrefContains, String fallbackMenuText) {
-        Frame f = findFrameWithSelector(originPage, "a[href*='" + hrefContains + "']", 5000);
+        com.microsoft.playwright.Frame f = findFrameWithSelector(originPage, "a[href*='" + hrefContains + "']", 5000);
         if (f == null && fallbackMenuText != null) {
             f = findFrameWithSelector(originPage, "span.text-hub-header-game-title:has-text('" + fallbackMenuText + "')", 5000);
         }
         if (f == null) {
-            for (Frame fx : originPage.frames()) {
+            for (com.microsoft.playwright.Frame fx : originPage.frames()) {
                 if (fx.locator("a[href*='" + hrefContains + "']").count() > 0) { f = fx; break; }
             }
         }
@@ -264,7 +266,7 @@ public class v2_id_authorization_fastgames {
         gamePage.waitForTimeout(150);
     }
 
-    /** Ищем любой активный «Продать»/«Вывести» в hit_met_condition, с учётом паузы. */
+    /** Ищем любой активный «Продать»/«Вывести» в hit_met_condition, с учётом паузы. (оставлено на будущее, сейчас не используется в Крэш-бокс) */
     private boolean waitAndSellAny(Page gamePage, int preDelayMs, int totalTimeoutMs) {
         gamePage.waitForTimeout(preDelayMs);
         long deadline = System.currentTimeMillis() + totalTimeoutMs;
@@ -311,8 +313,31 @@ public class v2_id_authorization_fastgames {
         return false;
     }
 
-    // ===== ТЕСТ ===============================================================
+    /** УНИКАЛЬНОЕ открытие «Бокс» по твоему HTML-селектору */
+    private Page openUniqueBoxingFromHub(Page originPage) {
+        String innerSpan = "a.menu-sports-item-inner[href*='productId=boxing'][href*='cid=1xbetkz'] " +
+                "span.text-hub-header-game-title:has-text('Бокс')";
 
+        com.microsoft.playwright.Frame f = findFrameWithSelector(originPage, innerSpan, 8000);
+        if (f == null) {
+            // fallback: вдруг рендерится в основном документе/других фреймах
+            for (com.microsoft.playwright.Frame fx : originPage.frames()) {
+                if (fx.locator(innerSpan).count() > 0) { f = fx; break; }
+            }
+        }
+        if (f == null) throw new RuntimeException("Не нашли уникальную кнопку 'Бокс' по заданному селектору ❌");
+
+        Locator span = f.locator(innerSpan);
+        if (span.count() == 0 || !span.first().isVisible())
+            throw new RuntimeException("Кнопка 'Бокс' не видна ❌");
+
+        // Кликаем по <a>, к которой относится span
+        Locator link = span.first().locator("xpath=ancestor::a");
+        link.first().scrollIntoViewIfNeeded();
+        return clickCardMaybeOpensNewTab(link.first());
+    }
+
+    // ===== ТЕСТ ===============================================================
     @Test
     void loginAndPlayFastGames() {
         System.out.println("Открываем сайт 1xbet.kz");
@@ -332,8 +357,10 @@ public class v2_id_authorization_fastgames {
         page.waitForTimeout(500);
         page.click("button.auth-button.auth-button--block.auth-button--theme-secondary");
 
-        System.out.println("Ждём 20 секунд (капча после 'Войти', если есть)");
-        page.waitForTimeout(20000);
+        // >>>> Ждём, пока появится «Выслать код» (первая капча решена)
+        System.out.println("Ждём, пока появится кнопка \"Выслать код\" (решаю капчу вручную, если есть)");
+        page.waitForSelector("button:has-text('Выслать код')",
+                new Page.WaitForSelectorOptions().setTimeout(120000).setState(WaitForSelectorState.VISIBLE));
 
         System.out.println("Ждём модальное окно SMS");
         page.waitForSelector("button:has-text('Выслать код')");
@@ -342,8 +369,10 @@ public class v2_id_authorization_fastgames {
         page.waitForTimeout(700);
         page.click("button:has-text('Выслать код')");
 
-        System.out.println("Ждём 20 секунд (капча после отправки SMS, если есть)");
-        page.waitForTimeout(20000);
+        // >>>> Ждём поле ввода кода (вторая капча решена)
+        System.out.println("Ждём появление поля ввода кода (решаю вторую капчу вручную, если есть)");
+        page.waitForSelector("input.phone-sms-modal-code__input",
+                new Page.WaitForSelectorOptions().setTimeout(120000).setState(WaitForSelectorState.VISIBLE));
 
         // Google Messages (скан QR вручную)
         System.out.println("Открываем Google Messages");
@@ -385,14 +414,19 @@ public class v2_id_authorization_fastgames {
         page.click("a.header-menu-nav-list-item__link.main-item:has-text('Быстрые игры')");
 
         System.out.println("Ищем карточку 'Крэш-Бокс' (через href) в фреймах");
-        Frame gamesFrame = findFrameWithSelector(page, "a.game[href*='crash-boxing']", 8000);
+        com.microsoft.playwright.Frame gamesFrame = findFrameWithSelector(page, "a.game[href*='crash-boxing']", 8000);
         if (gamesFrame == null) {
             gamesFrame = findFrameWithSelector(page, "p.game-name:has-text('Крэш-Бокс')", 12000);
         }
         if (gamesFrame == null) {
-            List<Frame> frames = page.frames();
+            for (com.microsoft.playwright.Frame fx : page.frames()) {
+                if (fx.locator("a.game[href*='crash-boxing']").count() > 0) { gamesFrame = fx; break; }
+            }
+        }
+        if (gamesFrame == null) {
+            List<com.microsoft.playwright.Frame> frames = page.frames();
             System.out.println("[DEBUG] Фреймы на странице:");
-            for (Frame f : frames) System.out.println(" - " + f.url());
+            for (com.microsoft.playwright.Frame f : frames) System.out.println(" - " + f.url());
             throw new RuntimeException("Не удалось найти карточку 'Крэш-Бокс' ни в одном iframe ❌");
         }
 
@@ -419,10 +453,7 @@ public class v2_id_authorization_fastgames {
         System.out.println("Ставка 50 KZT (yes_2)");
         clickFirstEnabled(gamePage, "div[role='button'][data-market='hit_met_condition'][data-outcome='yes_2']:has-text('Сделать ставку')", 30000);
 
-        System.out.println("Пробуем продать любую доступную ставку (0.5с + до 45с с учётом паузы)");
-        boolean sold = waitAndSellAny(gamePage, 500, 45000);
-        System.out.println(sold ? "Продажа состоялась ✅" : "[INFO] Продажа не состоялась");
-
+        // Продажу убрали. Как только «Сделать ставку» снова активны — сразу уходим в следующую игру.
         waitRoundToSettle(gamePage, 25000);
 
         // ===== Нарды =====
@@ -479,14 +510,13 @@ public class v2_id_authorization_fastgames {
         clickFirstEnabled(shootoutPage, "div[role='button'].market-button:has-text('Да')", 45000);
         waitRoundToSettle(shootoutPage, 35000);
 
-        // ===== Бокс =====
-        System.out.println("Переходим в игру 'Бокс'");
-        Page boxingPage = openGameByHrefContains(shootoutPage, "boxing", "Бокс");
+        // ===== Бокс (уникальная кнопка из твоего HTML) =====
+        System.out.println("Переходим в игру 'Бокс' (уникальная кнопка)");
+        Page boxingPage = openUniqueBoxingFromHub(shootoutPage);
         boxingPage.waitForTimeout(600);
         passTutorialIfPresent(boxingPage);
         setStake50ViaChip(boxingPage);
         System.out.println("Выбираем исход: боксёр №1 (первая кнопка)");
-        // Берём первую кнопку исхода, а не имя
         clickFirstEnabled(boxingPage, "div[role='button'].contest-panel-outcome-button", 20000);
         waitRoundToSettle(boxingPage, 20000);
 
